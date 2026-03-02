@@ -8,14 +8,21 @@ import { Badge } from "@/components/ui/badge"
 
 import { Play, Pause, SkipForward, SkipBack } from "phosphor-react"
 
-const socket = io(import.meta.env.VITE_BACKEND_URL, {
-  transports: ["websocket"],
-})
+const socketRef = useRef(null)
 
-//  ADD THIS RIGHT HERE
-socket.on("connect", () => {
-  console.log("Socket connected:", socket.id)
-})
+useEffect(() => {
+  socketRef.current = io(import.meta.env.VITE_BACKEND_URL, {
+    transports: ["websocket"],
+  })
+
+  socketRef.current.on("connect", () => {
+    console.log("Socket connected:", socketRef.current.id)
+  })
+
+  return () => {
+    socketRef.current.disconnect()
+  }
+}, [])
 
 const songs = [
   { name: "Song 1", file: "/music/song1.mp3" },
@@ -156,19 +163,19 @@ export default function App() {
   }
 
   const joinRoom = () => {
-    if (!socket) {
+    if (!socketRef.current) {
       console.log("Socket not ready")
       return
     }
 
-    if (!socket.connected) {
+    if (!socketRef.current.connected) {
       console.log("Socket not connected yet")
       return
     }
 
     console.log("Emitting join-room:", roomId)
 
-    socket.emit("join-room", roomId)
+    socketRef.current.emit("join-room", roomId)
   }
 
   const syncState = (time, index, playing) => {
