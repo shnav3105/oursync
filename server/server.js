@@ -4,94 +4,120 @@ const { Server } = require("socket.io")
 const cors = require("cors")
 
 const app = express()
+
+// Allow all origins (safe here because no auth)
 app.use(cors())
 
 const server = http.createServer(app)
 
 const io = new Server(server, {
   cors: {
-    origin: [
-      "http://localhost:5173",
-      "https://oursync.vercel.app/"
-    ],
-    methods: ["GET", "POST"]
-  }
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+  transports: ["websocket"], // 🔥 disable polling completely
 })
 
-let rooms = {}
+const rooms = {}
 
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id)
+  console.log("Connected:", socket.id)
 
   socket.on("create-room", (roomId) => {
     rooms[roomId] = {
       host: socket.id,
-      users: [socket.id],
+      listeners: [],
+      currentTime: 0,
+      isPlaying: false,
+      currentSong: 0,
       queue: [],
     }
+
     socket.join(roomId)
-    socket.emit("host")
+    socket.emit("room-created", roomId)
   })
 
   socket.on("join-room", (roomId) => {
-    if (rooms[roomId] && rooms[roomId].users.length < 2) {
-      rooms[roomId].users.push(socket.id)
-      socket.join(roomId)
+    const room = rooms[roomId]
+    if (!room) return
 
-      socket.emit("joined-success")
-      io.to(roomId).emit("user-joined")
-
-      // 🔥 Ask host to sync current playback state
-      io.to(rooms[roomId].host).emit("request-sync", {
-        roomId,
-        newUser: socket.id,
-      })
-    } else {
+    if (room.listeners.length >= 1) {
       socket.emit("room-full")
+      return
     }
+
+    room.listeners.push(socket.id)
+    socket.join(roomId)
+
+    socket.emit("room-joined", room)
   })
 
-  socket.on("control", ({ roomId, data }) => {
-    socket.to(roomId).emit("control", { data })
+  socket.on("play", ({ roomId, currentTime }) => {
+    const room = rooms[roomId]
+    if (!room) return
+
+    room.isPlaying = true
+    room.currentTime = currentTime
+
+    socket.to(roomId).emit("play", { currentTime })
   })
 
-  socket.on("update-queue", ({ roomId, queue }) => {
-    if (rooms[roomId]) {
-      rooms[roomId].queue = queue
-      io.to(roomId).emit("queue-updated", queue)
-    }
+  socket.on("pause", ({ roomId, currentTime }) => {
+    const room = rooms[roomId]
+    if (!room) return
+
+    room.isPlaying = false
+    room.currentTime = currentTime
+
+    socket.to(roomId).emit("pause", { currentTime })
   })
 
-  socket.on("send-message", ({ roomId, message, sender }) => {
-    io.to(roomId).emit("receive-message", {
+  socket.on("seek", ({ roomId, currentTime }) => {
+    const room = rooms[roomId]
+    if (!room) return
+
+    room.currentTime = currentTime
+    socket.to(roomId).emit("seek", { currentTime })
+  })
+
+  socket.on("next-song", ({ roomId, songIndex }) => {
+    const room = rooms[roomId]
+    if (!room) return
+
+    room.currentSong = songIndex
+    room.currentTime = 0
+    room.isPlaying = true
+
+    io.to(roomId).emit("next-song", { songIndex })
+  })
+
+  socket.on("add-to-queue", ({ roomId, song }) => {
+    const room = rooms[roomId]
+    if (!room) return
+
+    room.queue.push(song)
+    io.to(roomId).emit("queue-updated", room.queue)
+  })
+
+  socket.on("chat-message", ({ roomId, message, sender }) => {
+    io.to(roomId).emit("chat-message", {
       message,
       sender,
-      id: Date.now(),
+      timestamp: Date.now(),
     })
   })
 
-  socket.on("end-room", (roomId) => {
-    if (rooms[roomId]) {
-      io.to(roomId).emit("room-ended")
-      delete rooms[roomId]
-    }
-  })
-
-  socket.on("disconnect", () => {
-    for (let roomId in rooms) {
-      rooms[roomId].users = rooms[roomId].users.filter(
-        (id) => id !== socket.id
-      )
-
-      io.to(roomId).emit("user-left")
-
-      if (rooms[roomId].users.length === 0) {
-        delete rooms[roomId]
-      }
-    }
+  socket.on("disconnect-room", (roomId) => {
+    io.to(roomId).emit("room-ended")
+    delete rooms[roomId]
   })
 })
 
-server.listen(5000, () => {
-  console.log("Server running on port 5000")
+app.get("/", (req, res) => {
+  res.send("OurSync Backend Running 🚀")
+})
+
+const PORT = process.env.PORT || 5000
+server.listen(PORT, () => {
+  console.log("Server running on port", PORT)
 })
