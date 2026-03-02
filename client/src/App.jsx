@@ -156,12 +156,18 @@ export default function App() {
   }
 
   const joinRoom = () => {
+    if (!socket) {
+      console.log("Socket not ready")
+      return
+    }
+
     if (!socket.connected) {
       console.log("Socket not connected yet")
       return
     }
 
     console.log("Emitting join-room:", roomCode)
+
     socket.emit("join-room", roomCode)
   }
 
