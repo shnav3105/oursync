@@ -35,14 +35,18 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const [newMessage, setNewMessage] = useState("")
 
-  // 🔥 SOCKET SETUP
+  // ---------------- SOCKET SETUP ----------------
   useEffect(() => {
     socketRef.current = io(import.meta.env.VITE_BACKEND_URL, {
       transports: ["websocket"],
     })
 
     socketRef.current.on("connect", () => {
-      console.log("Socket connected:", socketRef.current.id)
+      console.log("Connected:", socketRef.current.id)
+    })
+
+    socketRef.current.on("host", () => {
+      setIsHost(true)
     })
 
     socketRef.current.on("listener-joined", () => {
@@ -51,27 +55,10 @@ export default function App() {
 
     socketRef.current.on("room-joined", () => {
       setJoined(true)
-      setPartnerConnected(true)
     })
 
-    socketRef.current.on("control", ({ data }) => {
-      if (!isHost) {
-        const audio = audioRef.current
-        setCurrentSongIndex(data.index)
-
-        setTimeout(() => {
-          audio.currentTime = data.time
-          setCurrentTime(data.time)
-
-          if (data.playing) {
-            audio.play()
-            setIsPlaying(true)
-          } else {
-            audio.pause()
-            setIsPlaying(false)
-          }
-        }, 150)
-      }
+    socketRef.current.on("user-left", () => {
+      setPartnerConnected(false)
     })
 
     socketRef.current.on("queue-updated", (newQueue) => {
@@ -82,8 +69,28 @@ export default function App() {
       setMessages((prev) => [...prev, data])
     })
 
+    socketRef.current.on("control", ({ data }) => {
+      if (isHost) return
+
+      const audio = audioRef.current
+      setCurrentSongIndex(data.index)
+
+      setTimeout(() => {
+        audio.currentTime = data.time
+        setCurrentTime(data.time)
+
+        if (data.playing) {
+          audio.play()
+          setIsPlaying(true)
+        } else {
+          audio.pause()
+          setIsPlaying(false)
+        }
+      }, 150)
+    })
+
     socketRef.current.on("room-ended", () => {
-      alert("Host ended the room ❤️")
+      alert("Room ended ❤️")
       resetRoom()
     })
 
@@ -92,7 +99,7 @@ export default function App() {
     }
   }, [isHost])
 
-  // 🎧 AUDIO EVENTS
+  // ---------------- AUDIO EVENTS ----------------
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
@@ -100,15 +107,62 @@ export default function App() {
     const updateTime = () => setCurrentTime(audio.currentTime)
     const setMeta = () => setDuration(audio.duration)
 
+    const handleEnded = () => {
+      if (!isHost) return
+
+      if (queue.length > 0) {
+        const next = queue[0]
+        const remaining = queue.slice(1)
+
+        const nextIndex = songs.findIndex(
+          (s) => s.name === next.name
+        )
+
+        setQueue(remaining)
+        socketRef.current.emit("update-queue", {
+          roomId,
+          queue: remaining,
+        })
+
+        setCurrentSongIndex(nextIndex)
+      } else {
+        setCurrentSongIndex(
+          (prev) => (prev + 1) % songs.length
+        )
+      }
+    }
+
     audio.addEventListener("timeupdate", updateTime)
     audio.addEventListener("loadedmetadata", setMeta)
+    audio.addEventListener("ended", handleEnded)
 
     return () => {
       audio.removeEventListener("timeupdate", updateTime)
       audio.removeEventListener("loadedmetadata", setMeta)
+      audio.removeEventListener("ended", handleEnded)
     }
-  }, [])
+  }, [queue, isHost])
 
+  // ---------------- SYNC ON SONG CHANGE ----------------
+  useEffect(() => {
+    if (!isHost) return
+
+    const audio = audioRef.current
+    audio.currentTime = 0
+    audio.play()
+    setIsPlaying(true)
+
+    socketRef.current.emit("control", {
+      roomId,
+      data: {
+        time: 0,
+        index: currentSongIndex,
+        playing: true,
+      },
+    })
+  }, [currentSongIndex])
+
+  // ---------------- HELPERS ----------------
   const resetRoom = () => {
     setJoined(false)
     setIsHost(false)
@@ -121,24 +175,26 @@ export default function App() {
     setMessages([])
   }
 
+  const formatTime = (time) => {
+    const mins = Math.floor(time / 60)
+    const secs = Math.floor(time % 60)
+    return `${mins}:${secs < 10 ? "0" : ""}${secs}`
+  }
+
+  // ---------------- ROOM FUNCTIONS ----------------
   const createRoom = () => {
     const id = Math.random().toString(36).substring(2, 8)
     setRoomId(id)
-    setIsHost(true)
     setJoined(true)
     socketRef.current.emit("create-room", id)
   }
 
   const joinRoom = () => {
-    if (!socketRef.current?.connected) {
-      console.log("Socket not connected")
-      return
-    }
-
-    console.log("Joining:", roomId)
+    if (!socketRef.current?.connected) return
     socketRef.current.emit("join-room", roomId)
   }
 
+  // ---------------- CONTROL ----------------
   const syncState = (time, index, playing) => {
     socketRef.current.emit("control", {
       roomId,
@@ -158,10 +214,21 @@ export default function App() {
     syncState(audioRef.current.currentTime, currentSongIndex, false)
   }
 
+  const handleSeek = (e) => {
+    if (!isHost) return
+    const newTime = Number(e.target.value)
+    audioRef.current.currentTime = newTime
+    setCurrentTime(newTime)
+    syncState(newTime, currentSongIndex, isPlaying)
+  }
+
   const addToQueue = (song) => {
     const updated = [...queue, song]
     setQueue(updated)
-    socketRef.current.emit("update-queue", { roomId, queue: updated })
+    socketRef.current.emit("update-queue", {
+      roomId,
+      queue: updated,
+    })
   }
 
   const sendMessage = () => {
@@ -177,12 +244,7 @@ export default function App() {
     setNewMessage("")
   }
 
-  const formatTime = (time) => {
-    const mins = Math.floor(time / 60)
-    const secs = Math.floor(time % 60)
-    return `${mins}:${secs < 10 ? "0" : ""}${secs}`
-  }
-
+  // ---------------- UI ----------------
   return (
     <div className="min-h-screen bg-gradient-to-br from-black via-rose-950 to-pink-950 text-white flex items-center justify-center">
       {!joined ? (
@@ -207,9 +269,9 @@ export default function App() {
           </Button>
         </Card>
       ) : (
-        <Card className="w-[800px] p-6 bg-black/70 border-pink-900 space-y-6">
+        <Card className="w-[900px] p-6 bg-black/70 border-pink-900 space-y-6">
           <div className="flex justify-between">
-            <h2 className="font-semibold">
+            <h2>
               Room: <span className="text-pink-400">{roomId}</span>
             </h2>
             <Badge className="bg-pink-600">
@@ -228,13 +290,7 @@ export default function App() {
             value={currentTime}
             step="0.1"
             disabled={!isHost}
-            onChange={(e) => {
-              if (!isHost) return
-              const newTime = Number(e.target.value)
-              audioRef.current.currentTime = newTime
-              setCurrentTime(newTime)
-              syncState(newTime, currentSongIndex, isPlaying)
-            }}
+            onChange={handleSeek}
             className="w-full accent-pink-500"
           />
 
@@ -268,6 +324,64 @@ export default function App() {
               </Button>
             </div>
           )}
+
+          {/* Queue */}
+          <div>
+            <h4 className="text-pink-300 mb-2">Up Next</h4>
+            <div className="max-h-32 overflow-y-auto space-y-1">
+              {queue.length === 0 && (
+                <p className="text-zinc-400 text-sm">
+                  No songs queued
+                </p>
+              )}
+              {queue.map((song, i) => (
+                <div key={i} className="bg-zinc-800 p-2 rounded">
+                  {song.name}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Chat */}
+          <div className="bg-black/50 rounded p-4 h-48 flex flex-col">
+            <div className="flex-1 overflow-y-auto mb-2">
+              {messages.map((msg, i) => {
+                const isMine =
+                  msg.sender === (isHost ? "host" : "listener")
+
+                return (
+                  <div
+                    key={i}
+                    className={`flex mb-2 ${
+                      isMine ? "justify-end" : "justify-start"
+                    }`}
+                  >
+                    <div
+                      className={`px-4 py-2 rounded-2xl max-w-[70%] text-sm ${
+                        isMine
+                          ? "bg-pink-600 text-white"
+                          : "bg-white text-black"
+                      }`}
+                    >
+                      {msg.message}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="flex gap-2">
+              <Input
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                placeholder="Type message..."
+                className="bg-zinc-800 text-white"
+              />
+              <Button onClick={sendMessage} className="bg-pink-600">
+                Send
+              </Button>
+            </div>
+          </div>
         </Card>
       )}
     </div>
