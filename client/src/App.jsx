@@ -12,6 +12,11 @@ const socket = io(import.meta.env.VITE_BACKEND_URL, {
   transports: ["websocket"],
 })
 
+//  ADD THIS RIGHT HERE
+socket.on("connect", () => {
+  console.log("Socket connected:", socket.id)
+})
+
 const songs = [
   { name: "Song 1", file: "/music/song1.mp3" },
   { name: "Song 2", file: "/music/song2.mp3" },
@@ -151,8 +156,13 @@ export default function App() {
   }
 
   const joinRoom = () => {
-    socket.emit("join-room", roomId)
-    setJoined(true)
+    if (!socket.connected) {
+      console.log("Socket not connected yet")
+      return
+    }
+
+    console.log("Emitting join-room:", roomCode)
+    socket.emit("join-room", roomCode)
   }
 
   const syncState = (time, index, playing) => {
