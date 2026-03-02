@@ -8,7 +8,9 @@ import { Badge } from "@/components/ui/badge"
 
 import { Play, Pause, SkipForward, SkipBack } from "phosphor-react"
 
-const socket = io(import.meta.env.VITE_BACKEND_URL || "http://localhost:5000")
+const socket = io(import.meta.env.VITE_BACKEND_URL, {
+  transports: ["websocket"],
+})
 
 const songs = [
   { name: "Song 1", file: "/music/song1.mp3" },
