@@ -166,9 +166,9 @@ export default function App() {
       return
     }
 
-    console.log("Emitting join-room:", roomCode)
+    console.log("Emitting join-room:", roomId)
 
-    socket.emit("join-room", roomCode)
+    socket.emit("join-room", roomId)
   }
 
   const syncState = (time, index, playing) => {
