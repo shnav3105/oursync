@@ -8,7 +8,6 @@ import { Badge } from "@/components/ui/badge"
 
 import { Play, Pause, SkipForward, SkipBack } from "phosphor-react"
 
-const socketRef = useRef(null)
 
 useEffect(() => {
   socketRef.current = io(import.meta.env.VITE_BACKEND_URL, {
@@ -17,6 +16,20 @@ useEffect(() => {
 
   socketRef.current.on("connect", () => {
     console.log("Socket connected:", socketRef.current.id)
+  })
+
+  socketRef.current.on("listener-joined", () => {
+    setPartnerConnected(true)
+  })
+
+  socketRef.current.on("room-joined", () => {
+    setJoined(true)
+    setPartnerConnected(true)
+  })
+
+  socketRef.current.on("room-ended", () => {
+    alert("Host ended the room ❤️")
+    resetRoom()
   })
 
   return () => {
@@ -34,6 +47,7 @@ const songs = [
 ]
 
 export default function App() {
+  const socketRef = useRef(null)
   const [roomId, setRoomId] = useState("")
   const [joined, setJoined] = useState(false)
   const [isHost, setIsHost] = useState(false)
