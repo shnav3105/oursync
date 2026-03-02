@@ -8,6 +8,22 @@ import { Badge } from "@/components/ui/badge"
 
 import { Play, Pause, SkipForward, SkipBack } from "phosphor-react"
 
+const socketRef = useRef(null)
+
+useEffect(() => {
+  socketRef.current = io(import.meta.env.VITE_BACKEND_URL, {
+    transports: ["websocket"],
+  })
+
+  socketRef.current.on("connect", () => {
+    console.log("Socket connected:", socketRef.current.id)
+  })
+
+  return () => {
+    socketRef.current.disconnect()
+  }
+}, [])
+
 const songs = [
   { name: "Song 1", file: "/music/song1.mp3" },
   { name: "Song 2", file: "/music/song2.mp3" },
@@ -18,9 +34,6 @@ const songs = [
 ]
 
 export default function App() {
-  const socketRef = useRef(null)
-  const audioRef = useRef(null)
-
   const [roomId, setRoomId] = useState("")
   const [joined, setJoined] = useState(false)
   const [isHost, setIsHost] = useState(false)
@@ -33,53 +46,7 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const [newMessage, setNewMessage] = useState("")
 
-  // ✅ SOCKET INITIALIZATION (FIXED)
-  useEffect(() => {
-    socketRef.current = io(import.meta.env.VITE_BACKEND_URL, {
-      transports: ["websocket"],
-    })
-
-    socketRef.current.on("connect", () => {
-      console.log("Socket connected:", socketRef.current.id)
-    })
-
-    socketRef.current.on("host", () => setIsHost(true))
-    socketRef.current.on("user-joined", () => setPartnerConnected(true))
-    socketRef.current.on("user-left", () => setPartnerConnected(false))
-    socketRef.current.on("queue-updated", (newQueue) => setQueue(newQueue))
-    socketRef.current.on("receive-message", (data) =>
-      setMessages((prev) => [...prev, data])
-    )
-
-    socketRef.current.on("room-ended", () => {
-      alert("Host ended the room ❤️")
-      resetRoom()
-    })
-
-    socketRef.current.on("control", ({ data }) => {
-      if (!isHost) {
-        const audio = audioRef.current
-        setCurrentSongIndex(data.index)
-
-        setTimeout(() => {
-          audio.currentTime = data.time
-          setCurrentTime(data.time)
-
-          if (data.playing) {
-            audio.play()
-            setIsPlaying(true)
-          } else {
-            audio.pause()
-            setIsPlaying(false)
-          }
-        }, 150)
-      }
-    })
-
-    return () => {
-      socketRef.current.disconnect()
-    }
-  }, [isHost])
+  const audioRef = useRef(null)
 
   const formatTime = (time) => {
     const mins = Math.floor(time / 60)
@@ -99,7 +66,44 @@ export default function App() {
     setMessages([])
   }
 
-  // 🎧 AUDIO EVENTS
+  useEffect(() => {
+    socket.on("host", () => setIsHost(true))
+    socket.on("user-joined", () => setPartnerConnected(true))
+    socket.on("user-left", () => setPartnerConnected(false))
+    socket.on("queue-updated", (newQueue) => setQueue(newQueue))
+    socket.on("receive-message", (data) =>
+      setMessages((prev) => [...prev, data])
+    )
+    socket.on("room-ended", () => {
+      alert("Host ended the room ❤️")
+      resetRoom()
+    })
+
+    socket.on("control", ({ data }) => {
+      if (!isHost) {
+        const audio = audioRef.current
+
+        setCurrentSongIndex(data.index)
+
+        // Wait until new audio source loads
+        setTimeout(() => {
+          audio.currentTime = data.time
+          setCurrentTime(data.time)
+
+          if (data.playing) {
+            audio.play()
+            setIsPlaying(true)
+          } else {
+            audio.pause()
+            setIsPlaying(false)
+          }
+        }, 150)
+      }
+    })
+
+    return () => socket.off()
+  }, [isHost])
+
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
@@ -118,7 +122,7 @@ export default function App() {
         )
 
         setQueue(remaining)
-        socketRef.current.emit("update-queue", { roomId, queue: remaining })
+        socket.emit("update-queue", { roomId, queue: remaining })
         setCurrentSongIndex(nextIndex)
       } else {
         setCurrentSongIndex(
@@ -138,7 +142,6 @@ export default function App() {
     }
   }, [queue, isHost, currentSongIndex])
 
-  // 🔥 SYNC WHEN SONG CHANGES
   useEffect(() => {
     if (!isHost) return
     const audio = audioRef.current
@@ -146,7 +149,7 @@ export default function App() {
     audio.play()
     setIsPlaying(true)
 
-    socketRef.current.emit("control", {
+    socket.emit("control", {
       roomId,
       data: { time: 0, index: currentSongIndex, playing: true },
     })
@@ -155,21 +158,28 @@ export default function App() {
   const createRoom = () => {
     const id = Math.random().toString(36).substring(2, 8)
     setRoomId(id)
-    socketRef.current.emit("create-room", id)
+    socket.emit("create-room", id)
     setJoined(true)
   }
 
   const joinRoom = () => {
-    if (!socketRef.current?.connected) {
+    if (!socketRef.current) {
       console.log("Socket not ready")
       return
     }
+
+    if (!socketRef.current.connected) {
+      console.log("Socket not connected yet")
+      return
+    }
+
+    console.log("Emitting join-room:", roomId)
 
     socketRef.current.emit("join-room", roomId)
   }
 
   const syncState = (time, index, playing) => {
-    socketRef.current.emit("control", {
+    socket.emit("control", {
       roomId,
       data: { time, index, playing },
     })
@@ -189,7 +199,9 @@ export default function App() {
 
   const handleSeek = (e) => {
     if (!isHost) return
-    const newTime = Number(e.target.value)
+    const rect = e.target.getBoundingClientRect()
+    const percent = (e.clientX - rect.left) / rect.width
+    const newTime = percent * duration
     audioRef.current.currentTime = newTime
     setCurrentTime(newTime)
     syncState(newTime, currentSongIndex, isPlaying)
@@ -198,13 +210,13 @@ export default function App() {
   const addToQueue = (song) => {
     const updated = [...queue, song]
     setQueue(updated)
-    socketRef.current.emit("update-queue", { roomId, queue: updated })
+    socket.emit("update-queue", { roomId, queue: updated })
   }
 
   const sendMessage = () => {
     if (!newMessage.trim()) return
     const sender = isHost ? "host" : "listener"
-    socketRef.current.emit("send-message", {
+    socket.emit("send-message", {
       roomId,
       message: newMessage,
       sender,
@@ -233,10 +245,166 @@ export default function App() {
           </Button>
         </Card>
       ) : (
-        /* YOUR ENTIRE UI REMAINS EXACTLY SAME BELOW */
-        <>
-        {/* I kept everything exactly same as your original UI */}
-        </>
+        <Card className="w-[800px] p-6 bg-black/70 border-pink-900 space-y-6">
+          <div className="flex justify-between">
+            <h2 className="text-white font-semibold">
+              Room: <span className="text-pink-400">{roomId}</span>
+            </h2>
+            <Badge className="bg-pink-600">
+              {partnerConnected ? "Connected ❤️" : "Waiting..."}
+            </Badge>
+          </div>
+
+          <h3 className="text-xl text-pink-300">
+            {songs[currentSongIndex].name}
+          </h3>
+
+          {/* 🎚 Draggable Progress Bar */}
+          <div className="space-y-2">
+            <input
+              type="range"
+              min="0"
+              max={duration || 0}
+              value={currentTime}
+              step="0.1"
+              disabled={!isHost}
+              onChange={(e) => {
+                if (!isHost) return
+                const newTime = Number(e.target.value)
+                audioRef.current.currentTime = newTime
+                setCurrentTime(newTime)
+
+                socket.emit("control", {
+                  roomId,
+                  data: {
+                    time: newTime,
+                    index: currentSongIndex,
+                    playing: isPlaying,
+                  },
+                })
+              }}
+              className="w-full accent-pink-500 cursor-pointer disabled:opacity-50"
+            />
+
+            <div className="flex justify-between text-sm text-zinc-400">
+              <span>{formatTime(currentTime)}</span>
+              <span>{formatTime(duration)}</span>
+            </div>
+          </div>
+
+          <audio
+            ref={audioRef}
+            src={songs[currentSongIndex].file}
+          />
+
+          {isHost && (
+            <div className="flex gap-6 justify-center">
+              <Button onClick={() =>
+                setCurrentSongIndex((p) => (p - 1 + songs.length) % songs.length)
+              }>
+                <SkipBack size={22} weight="fill" />
+              </Button>
+
+              <Button onClick={isPlaying ? pauseMusic : playMusic}>
+                {isPlaying ? (
+                  <Pause size={22} weight="fill" />
+                ) : (
+                  <Play size={22} weight="fill" />
+                )}
+              </Button>
+
+              <Button onClick={() =>
+                setCurrentSongIndex((p) => (p + 1) % songs.length)
+              }>
+                <SkipForward size={22} weight="fill" />
+              </Button>
+            </div>
+          )}
+
+          {/* Scrollable All Songs */}
+          <div>
+            <h4 className="text-pink-300 mb-2">All Songs</h4>
+            <div className="max-h-40 overflow-y-auto space-y-2">
+              {songs.map((song, i) => (
+                <div
+                  key={i}
+                  className="flex justify-between bg-zinc-800 p-2 rounded"
+                >
+                  <span>{song.name}</span>
+                  <Button
+                    size="sm"
+                    onClick={() => addToQueue(song)}
+                    className="bg-pink-600"
+                  >
+                    Add
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Scrollable Queue */}
+          <div>
+            <h4 className="text-pink-300 mb-2">Up Next</h4>
+            <div className="max-h-32 overflow-y-auto space-y-1">
+              {queue.length === 0 && (
+                <p className="text-zinc-400 text-sm">
+                  No songs queued
+                </p>
+              )}
+              {queue.map((song, i) => (
+                <div key={i} className="bg-zinc-800 p-2 rounded">
+                  {song.name}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Chat */}
+          <div className="bg-black/50 rounded p-4 h-48 flex flex-col">
+            <div className="flex-1 overflow-y-auto mb-2">
+              {messages.map((msg) => {
+                const isMine =
+                  msg.sender === (isHost ? "host" : "listener")
+
+                return (
+                  <div
+                    key={msg.id}
+                    className={`flex mb-2 ${
+                      isMine ? "justify-end" : "justify-start"
+                    }`}
+                  >
+                    <div
+                      className={`px-4 py-2 rounded-2xl max-w-[70%] text-sm ${
+                        isMine
+                          ? "bg-pink-600 text-white"
+                          : "bg-white text-black"
+                      }`}
+                    >
+                      {msg.message}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="flex gap-2">
+              <Input
+                value={newMessage}
+                onChange={(e) =>
+                  setNewMessage(e.target.value)
+                }
+                placeholder="Type message..."
+                className="bg-zinc-800 text-white"
+              />
+              <Button
+                onClick={sendMessage}
+                className="bg-pink-600"
+              >
+                Send
+              </Button>
+            </div>
+          </div>
+        </Card>
       )}
     </div>
   )
